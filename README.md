@@ -35,3 +35,12 @@ TO DO:
 - Load the source and destination files to the s3 buckets
 - AWS EMR Deployment
 
+1. How long did you spend on the coding test? 8 hours
+2. What would you add to your solution if you had more time? Written above TO DO section
+3. If you didn't spend much time on the coding test then use this as an opportunity to explain what you would add. YES
+4. What was the most useful feature that was added to the latest version of your chosen language? Please include a snippet of code that shows how you've used it.
+    No new feature used for this assignment, could be done as a part of TO DO.
+5. How would you track down a performance issue in production? By looking at logs and spark UI for task explanation. 
+6. Have you ever had to do this the above task with the terabyte of data? Not yet, but would like to.
+    
+
