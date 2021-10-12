@@ -1,6 +1,7 @@
 import datetime
+import json
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import weekofyear, col
+from pyspark.sql.functions import weekofyear, col, concat_ws, to_json, isnull
 from pyspark.sql import functions as F
 
 
@@ -72,26 +73,31 @@ class Assignment:
         store_product_sales_calendar_df.fillna(0)
 
         # change type of 'netSales', 'salesUnits'
-        store_sales_with_double_type = store_product_sales_calendar_df.netSales.cast('double')
-        store_sales_unit_int_type = store_product_sales_calendar_df.salesUnits.cast('int')
-
         new_store_sales_with_double_df = store_product_sales_calendar_df \
-            .withColumn('netSalesDouble', store_sales_with_double_type) \
-            .withColumn('salesUnitsInt', store_sales_unit_int_type)
+            .withColumn('netSales', col('netSales').cast('Double')) \
+            .withColumn('salesUnits', col('salesUnits').cast('int'))
+
+        # enrich key using concat_ws
+        key_store_sales = new_store_sales_with_double_df.withColumn('key', concat_ws('_',
+                                                                                     new_store_sales_with_double_df.division,
+                                                                                     new_store_sales_with_double_df.gender,
+                                                                                     new_store_sales_with_double_df.category,
+                                                                                     new_store_sales_with_double_df.channel,
+                                                                                     new_store_sales_with_double_df.datecalendaryear))
 
         # aggregate netSales and salesUnits on unique datecalendaryear and week_of_year
         # creating key
-        output_data_for_known_weeks = new_store_sales_with_double_df.groupBy(new_store_sales_with_double_df.division,
-                                                                             new_store_sales_with_double_df.gender,
-                                                                             new_store_sales_with_double_df.category,
-                                                                             new_store_sales_with_double_df.channel,
-                                                                             new_store_sales_with_double_df.datecalendaryear,
-                                                                             new_store_sales_with_double_df.week_of_year) \
-            .agg(F.sum(new_store_sales_with_double_df.netSalesDouble),
-                 F.sum(new_store_sales_with_double_df.salesUnitsInt)) \
-            .withColumnRenamed('SUM(netSalesDouble)', 'weekly_sales') \
-            .withColumnRenamed('SUM(salesUnitsInt)', 'weekly_units') \
-            .withColumn('key', F.concat(col("division"), col("gender"), col("category"), col('channel'))) \
+        output_data_for_known_weeks = key_store_sales.groupBy(key_store_sales.division,
+                                                              key_store_sales.gender,
+                                                              key_store_sales.category,
+                                                              key_store_sales.channel,
+                                                              key_store_sales.datecalendaryear,
+                                                              key_store_sales.week_of_year,
+                                                              key_store_sales.key) \
+            .agg(F.sum(key_store_sales.netSales),
+                 F.sum(key_store_sales.salesUnits)) \
+            .withColumnRenamed('SUM(netSales)', 'weekly_sales') \
+            .withColumnRenamed('SUM(salesUnits)', 'weekly_units') \
             .orderBy('key')
 
         # TO DO:
@@ -99,6 +105,49 @@ class Assignment:
         # pivot data to get all weeks for key
         # multiple json files based on unique kyes
 
-        spark.stop()
+        distinct_key_df = key_store_sales.select('key').distinct()
+        all_weeks_key_df = calendar_with_week_number_df.crossJoin(distinct_key_df).select('key', 'week_of_year') \
+            .withColumnRenamed('week_of_year', 'week_number')
+
+        all_data_with_missing_weeks_df = all_weeks_key_df.join(output_data_for_known_weeks,
+                                                               (all_weeks_key_df.key == output_data_for_known_weeks.key)
+                                                               & (
+                                                                           all_weeks_key_df.week_number == output_data_for_known_weeks.week_of_year),
+                                                               how='leftouter').drop(all_weeks_key_df.key)
+
+        all_data_with_missing_weeks_df = all_data_with_missing_weeks_df.fillna(0,
+                                                                               subset=['weekly_sales', 'weekly_units'])
+        all_data_with_missing_weeks_df.cache()
+
+        pivoted_netSales_on_weekNumbers_df = all_data_with_missing_weeks_df.groupBy('key') \
+            .pivot('week_number').sum('weekly_sales').filter(~isnull('key')).fillna(0)
+        pivoted_netSales_on_weekNumbers_df.cache()
+        pivoted_netSales_on_weekNumbers_df.show()
+
+        pivoted_salesUnits_on_weekNumbers_df = all_data_with_missing_weeks_df.groupBy('key') \
+            .pivot('week_number').sum('weekly_units').filter(~isnull('key')).fillna(0)
+        pivoted_salesUnits_on_weekNumbers_df.cache()
+        pivoted_salesUnits_on_weekNumbers_df.show()
+
+        def get_json_string(row_id):
+            def map_fn(row):
+                week_dict = {
+                    "dataRows": {"dataRow": {"W" + str(week_number): value for week_number, value in enumerate(row) if
+                                             week_number > 0},
+                                 "rowId": row_id}, "uniqueKey": row[0]}
+                return week_dict
+
+            return map_fn
+
+        def create_json_string_for_each_row(pivoted_df, row_id):
+            json_string_for_each_row = pivoted_df.rdd.map(get_json_string(row_id)).toDF()
+            json_string_for_each_row.show()
+
+            return json_string_for_each_row
+
+        json_string_netSales = create_json_string_for_each_row(pivoted_netSales_on_weekNumbers_df, "Net Sales")
+        json_string_salesUnits = create_json_string_for_each_row(pivoted_salesUnits_on_weekNumbers_df, "Sales Units")
+
+        output_json_df = json_string_netSales.union(json_string_salesUnits).groupBy('uniqueKey')
 
         return calendar_df, product_df, sales_df, store_df
