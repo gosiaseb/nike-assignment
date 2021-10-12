@@ -17,8 +17,6 @@ if __name__ == "__main__":
 
     data_assignment = Assignment(calendar_data_file, product_data_file, sales_data_file, store_data_file, output_data_file)
     data_assignment.process_data()
-    # list_of_rows_with_uniqueKey_dataRows = [(row.asDict())for row in data_assignment.process_data().collect()]
-    # json_list_all_data = json.dumps(list_of_rows_with_uniqueKey_dataRows).replace('\\', '')
-    # print(json_list_all_data)
+
 
 

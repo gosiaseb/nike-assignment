@@ -1,7 +1,7 @@
 import datetime
 import json
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import weekofyear, col, concat_ws, to_json, isnull, collect_list
+from pyspark.sql.functions import weekofyear, col, concat_ws, to_json, isnull, collect_list, array
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, StringType, FloatType
 
@@ -124,21 +124,28 @@ class Assignment:
         pivoted_salesUnits_on_weekNumbers_df.cache()
 
         json_df_netSales = self.create_json_string_for_each_row(pivoted_netSales_on_weekNumbers_df, "Net Sales")
-        json_df_netSales = json_df_netSales.withColumnRenamed("dataRows", "Net Sales")
+        json_df_netSales = json_df_netSales.withColumnRenamed("dataRows", "net_sales")
         json_df_salesUnits = self.create_json_string_for_each_row(pivoted_salesUnits_on_weekNumbers_df, "Sales Units")
-        json_df_salesUnits = json_df_salesUnits.withColumnRenamed("dataRows", "Sales Units")
-        final_data_df = key_store_sales.select('key', 'division', 'gender','category', 'channel', 'datecalendaryear').distinct()\
-            .join(json_df_netSales, (key_store_sales.key==json_df_netSales.uniqueKey), how='leftouter').drop("uniquekey")\
-            .join(json_df_salesUnits,(key_store_sales.key==json_df_salesUnits.uniqueKey), how='leftouter').drop("uniquekey")
-        final_data_df.show(truncate=False)
-        final_data_df.repartition("key").write.json(self.output_data_file)
+        json_df_salesUnits = json_df_salesUnits.withColumnRenamed("dataRows", "sales_units")
+        final_data_df = key_store_sales.select('key', 'division', 'gender', 'category', 'channel',
+                                               'datecalendaryear').distinct() \
+            .join(json_df_netSales, (key_store_sales.key == json_df_netSales.uniqueKey), how='leftouter').drop(
+            "uniquekey") \
+            .join(json_df_salesUnits, (key_store_sales.key == json_df_salesUnits.uniqueKey), how='leftouter').drop(
+            "uniquekey")
+        final_data_df_array = final_data_df.select('key', 'division', 'gender', 'category', 'channel',
+                                                   'datecalendaryear',
+                                                   array(final_data_df.net_sales, final_data_df.sales_units).alias(
+                                                       "dataRows"))
+        final_data_df_array.repartition("key").write.json(self.output_data_file)
         return
 
     def get_json_string(self, row_id):
         def map_fn(row):
             week_dict = {
-                "dataRows": {"dataRow": json.dumps ({"W" + str(week_number): float(value) for week_number, value in enumerate(row) if
-                                         week_number > 0}),"rowId": row_id}, "uniqueKey": row[0]}
+                "dataRows": {"dataRow": json.dumps(
+                    {"W" + str(week_number): float(value) for week_number, value in enumerate(row) if
+                     week_number > 0}), "rowId": row_id}, "uniqueKey": row[0]}
             return week_dict
 
         return map_fn
@@ -149,6 +156,6 @@ class Assignment:
             StructField("dataRows", StructType([
                 StructField("rowId", StringType(), True),
                 StructField("dataRow", StringType(), True)]), True)]))
-        json_string_for_each_row=json_string_for_each_row.withColumn("dataRows", to_json("dataRows"))
+        json_string_for_each_row = json_string_for_each_row.withColumn("dataRows", to_json("dataRows"))
 
         return json_string_for_each_row
