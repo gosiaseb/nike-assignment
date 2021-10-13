@@ -14,7 +14,8 @@ class Assignment:
         self.store_data_file = store_data_file
         self.output_data_file = output_data_file
 
-    def get_actual_calendar_weeks(self, calendar_df_old):
+    # Function to get the whole calendar date, so it is possible to get the actual week of the year (week number)
+    def get_actual_calendar_date(self, calendar_df_old):
         pan = calendar_df_old.toPandas()
         list_ofindices = []
         for index, value in enumerate(pan['datecalendarday']):
@@ -25,22 +26,24 @@ class Assignment:
         actual_calendar_week = []
         monthsofyear = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         for i in range(len(list_ofindices) - 1):
+
             for x in range(list_ofindices[i], list_ofindices[i + 1]):
-                dets = datetime.date(int(pan['datecalendaryear'][x]), monthsofyear[i + 1],
-                                     int(pan['datecalendarday'][x]))
-                actual_calendar_week.append([pan['datekey'][x], dets])
+                actual_dates = datetime.date(int(pan['datecalendaryear'][x]), monthsofyear[i + 1],
+                                             int(pan['datecalendarday'][x]))
+                actual_calendar_week.append([pan['datekey'][x], actual_dates])
 
         return actual_calendar_week
 
     def process_data(self):
+        # Creating spark session
         spark = SparkSession.builder.master("local[*]").appName("NikeAssignment").getOrCreate()
-
+        # read files to spark dataframe and repartition product_df, sales_df,store_df by column (effects with less shuffles)
         calendar_df = spark.read.option("header", True).csv(self.calendar_data_file)
         product_df = spark.read.option("header", True).csv(self.product_data_file).repartition('productId')
         sales_df = spark.read.option("header", True).csv(self.sales_data_file).repartition('productId')
         store_df = spark.read.option("header", True).csv(self.store_data_file).repartition('storeId')
 
-        actual_calendar_week = self.get_actual_calendar_weeks(calendar_df)
+        actual_calendar_week = self.get_actual_calendar_date(calendar_df)
 
         only_calendar_date_df = spark.createDataFrame(actual_calendar_week)
         new_calendar_with_date_df = calendar_df.join(only_calendar_date_df,
@@ -103,6 +106,7 @@ class Assignment:
             .orderBy('key')
 
         distinct_key_df = key_store_sales.select('key').distinct()
+        # cross join
         all_weeks_key_df = calendar_with_week_number_df.crossJoin(distinct_key_df).select('key', 'week_of_year') \
             .withColumnRenamed('week_of_year', 'week_number')
 
@@ -110,23 +114,27 @@ class Assignment:
                 all_weeks_key_df.key == output_data_for_known_weeks.key) & (
                                                                        all_weeks_key_df.week_number == output_data_for_known_weeks.week_of_year),
                                                                how='leftouter').drop(all_weeks_key_df.key)
-
+        # Fill  null values with 0
         all_data_with_missing_weeks_df = all_data_with_missing_weeks_df.fillna(0,
                                                                                subset=['weekly_sales', 'weekly_units'])
         all_data_with_missing_weeks_df.cache()
-
+        #Pivot and fill null with 0
         pivoted_netSales_on_weekNumbers_df = all_data_with_missing_weeks_df.groupBy('key') \
             .pivot('week_number').sum('weekly_sales').filter(~isnull('key')).fillna(0)
         pivoted_netSales_on_weekNumbers_df.cache()
 
+        # Pivot and fill null with 0
         pivoted_salesUnits_on_weekNumbers_df = all_data_with_missing_weeks_df.groupBy('key') \
             .pivot('week_number').sum('weekly_units').filter(~isnull('key')).fillna(0)
         pivoted_salesUnits_on_weekNumbers_df.cache()
 
+        # json dataframe of Net Sales
         json_df_netSales = self.create_json_string_for_each_row(pivoted_netSales_on_weekNumbers_df, "Net Sales")
         json_df_netSales = json_df_netSales.withColumnRenamed("dataRows", "net_sales")
+        # json dataframe of Sales Units
         json_df_salesUnits = self.create_json_string_for_each_row(pivoted_salesUnits_on_weekNumbers_df, "Sales Units")
         json_df_salesUnits = json_df_salesUnits.withColumnRenamed("dataRows", "sales_units")
+        #Final dataframe with both Net Sales and Sales Units
         final_data_df = key_store_sales.select('key', 'division', 'gender', 'category', 'channel',
                                                'datecalendaryear').distinct() \
             .join(json_df_netSales, (key_store_sales.key == json_df_netSales.uniqueKey), how='leftouter').drop(
@@ -140,6 +148,7 @@ class Assignment:
         final_data_df_array.repartition("key").write.json(self.output_data_file)
         return
 
+    # Function to get json string
     def get_json_string(self, row_id):
         def map_fn(row):
             week_dict = {
